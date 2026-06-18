@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="100% 로컬 실행 피싱 문자 AI 분석기. 규칙 엔진 + Ollama로 개인정보를 절대 외부에 보내지 않고 분석합니다.">
+  <meta name="theme-color" content="#0f766e">
+  <title>피싱 문자 AI 분석기</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/styles.css?v=1.4.1-system">
+</head>
+<body>
+  <!-- Professional Top Navigation -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="shield">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <div>
+          <div class="brand-title">Phishing Recon Platform</div>
+          <div class="brand-sub">Local Analysis System · v<span id="appVersion">1.4.0</span></div>
+        </div>
+      </div>
+
+      <nav class="main-tabs" role="tablist" aria-label="주요 메뉴">
+        <button class="tab-btn active" data-tab="analyze" role="tab" aria-selected="true">분석하기</button>
+        <button class="tab-btn" data-tab="history" role="tab" aria-selected="false">분석 기록</button>
+        <button class="tab-btn" data-tab="settings" role="tab" aria-selected="false">설정</button>
+        <button class="tab-btn" data-tab="about" role="tab" aria-selected="false">정보</button>
+      </nav>
+
+      <div class="header-actions">
+        <div class="engine-mini" id="engineMini">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="engineStateShort">Initializing</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <!-- ============ TAB: ANALYZE ============ -->
+    <section id="tab-analyze" class="tab-content active">
+      <div class="workspace">
+        <!-- 입력 -->
+        <section class="input-panel">
+          <div class="section-head">
+            <h2>분석 대상</h2>
+            <div class="trust-badge">LOCAL ONLY • COMMAND-DRIVEN ANALYSIS • ZERO EXFIL</div>
+          </div>
+
+          <div class="samples" id="samples">
+            <button type="button" class="sample-chip" data-sample="gov">정부지원금 유형</button>
+            <button type="button" class="sample-chip" data-sample="invest">투자·리딩방 유형</button>
+            <button type="button" class="sample-chip" data-sample="voice">보이스피싱 유형</button>
+            <button type="button" class="sample-chip" data-sample="romance">로맨스 스캠</button>
+            <button type="button" class="sample-chip" data-sample="clean">정상 안내 (대조군)</button>
+          </div>
+
+          <label for="message">의심 문자 내용</label>
+          <textarea id="message" spellcheck="false" placeholder="의심 문자를 여기에 붙여넣으세요..."></textarea>
+
+          <label for="fileInput">첨부 파일 메타데이터 (내용 읽기 없음)</label>
+          <input id="fileInput" type="file" multiple>
+          <p class="hint">파일의 이름, 크기, 확장자만 위험 점수에 반영합니다. 실제 파일 내용은 절대 읽지 않습니다.</p>
+          <div class="file-list" id="fileList">선택된 파일 없음</div>
+
+          <div class="actions-row">
+            <button type="button" class="primary" id="analyzeButton">
+              <span id="analyzeText">AI 분석하기</span>
+            </button>
+            <button type="button" class="secondary" id="resetButton">초기화</button>
+          </div>
+        </section>
+
+        <!-- 결과 -->
+        <section class="result-panel">
+          <div class="section-head" style="margin-bottom:12px; padding-bottom:8px;">
+            <h2 style="font-size:14px;">Analysis Session</h2>
+          </div>
+          <div class="risk-visual" id="riskVisual">
+            <div>
+              <div class="score-main">
+                <span id="scoreLabel">0</span><span class="score-num">점</span>
+              </div>
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div id="riskLabel" class="risk-label-main">분석 전</div>
+              <div class="score-bar-wrap">
+                <div class="score-bar"><div class="fill" id="scoreFill" style="width:0%"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-card">
+            <h2>Analysis Summary</h2>
+            <p id="summaryText">문자와 파일 정보를 입력한 뒤 분석을 실행하세요.</p>
+          </div>
+
+          <div class="grid-results">
+            <article><h3>공격 유형</h3><div class="value" id="attackType">-</div></article>
+            <article><h3>신뢰도</h3><div class="value" id="confidence">-</div></article>
+          </div>
+
+          <div class="details">
+            <h2>탐지 근거</h2>
+            <div id="detections" class="detections"><div class="empty">탐지 결과 없음</div></div>
+
+            <h2>URL Probes</h2>
+            <div id="urlFindings" class="urlFindings"><div class="empty">URL 없음</div></div>
+
+            <h2>파일 분석</h2>
+            <div id="fileFindings" class="fileFindings"><div class="empty">파일 없음</div></div>
+
+            <h2>권장 대응</h2>
+            <ul class="recommendations" id="recommendations"><li>의심 문자는 공식 경로로 확인하세요.</li></ul>
+
+            <h2>Investigation Trace <span style="font-size:10px;opacity:0.6">(commands executed during analysis)</span></h2>
+            <div id="traceLog" class="trace-log" style="display:none; font-family: ui-monospace, monospace; font-size:12px; background:#0a0f1a; border:1px solid #2a3648; padding:10px; border-radius:6px; max-height:220px; overflow:auto; white-space:pre-wrap;"></div>
+          </div>
+
+          <div class="result-actions" id="resultActions" style="display:none;">
+            <button type="button" class="secondary" id="copyBtn">📋 복사</button>
+            <button type="button" class="secondary" id="exportJsonBtn">JSON</button>
+            <button type="button" class="secondary" id="exportTxtBtn">TXT 보고서</button>
+            <button type="button" class="ghost" id="reportFalseBtn">🚩 거짓양성 신고</button>
+            <button type="button" class="ghost" id="reanalyzeBtn">🔄 재분석</button>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- ============ TAB: HISTORY ============ -->
+    <section id="tab-history" class="tab-content">
+      <div class="panel">
+        <div class="section-head">
+          <h2>분석 기록</h2>
+          <div class="history-controls">
+            <input type="text" id="historySearch" placeholder="기록 검색..." class="search-input">
+            <button type="button" class="secondary" id="exportAllHistoryBtn">전체 내보내기</button>
+            <button type="button" class="ghost" id="clearHistoryBtn">전체 삭제</button>
+          </div>
+        </div>
+
+        <div id="historyList" class="history-list enhanced">
+          <div class="empty">아직 분석 기록이 없습니다.</div>
+        </div>
+
+        <div class="history-footer">
+          <span id="historyCount">0개 기록</span>
+          <button type="button" class="ghost small" id="deleteSelectedBtn" style="display:none;">선택 삭제</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB: SETTINGS ============ -->
+    <section id="tab-settings" class="tab-content">
+      <div class="panel">
+        <h2>설정</h2>
+
+        <div class="settings-group">
+          <div class="setting-item">
+            <div>
+              <strong>URLhaus 위협정보 조회</strong>
+              <p class="setting-desc">공개 악성 URL 데이터베이스 조회 (기본 활성화)</p>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="urlhausToggle" checked>
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-item">
+            <div>
+              <strong>현재 사용 모델</strong>
+              <p class="setting-desc" id="currentModel">llama3.2:latest</p>
+            </div>
+          </div>
+
+          <div class="setting-item">
+            <div>
+              <strong>기록 보관 개수</strong>
+              <p class="setting-desc">최대 6개 (로컬 저장)</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="danger-zone">
+          <h3>위험 구역</h3>
+          <button type="button" class="danger-btn" id="clearAllDataBtn">모든 로컬 데이터 삭제 (기록 + 설정)</button>
+          <p class="danger-note">브라우저에 저장된 모든 분석 기록과 설정이 사라집니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TAB: ABOUT ============ -->
+    <section id="tab-about" class="tab-content">
+      <div class="panel about-panel">
+        <h2>이 도구에 대하여</h2>
+
+        <div class="trust-grid">
+          <div class="trust-item">100% Local Execution</div>
+          <div class="trust-item">Zero Data Exfiltration</div>
+          <div class="trust-item">Command-driven Recon (curl, strings, file...)</div>
+          <div class="trust-item">Local LLM for Synthesis</div>
+        </div>
+
+        <div class="about-text">
+          <p>이 프로그램은 실제 운영 환경에서 사용할 수 있도록 설계된 <strong>프라이버시 중심 피싱 탐지 도구</strong>입니다.</p>
+          <p>문자 내용, URL, 첨부파일 메타데이터만을 분석하며, 그 어떤 데이터도 외부 서버로 전송되지 않습니다.</p>
+        </div>
+
+        <div class="disclaimer">
+          <strong>법적 고지</strong><br>
+          이 도구는 참고용이며, 100% 정확성을 보장하지 않습니다. 실제 피해가 의심될 경우 경찰청 사이버수사대(112) 또는 한국인터넷진흥원(KISA)에 신고하시기 바랍니다.
+          거짓 양성(정상 문자를 피싱으로 판단) 또는 거짓 음성 사례는 "거짓양성 신고" 기능을 통해 피드백해 주시면 개선에 큰 도움이 됩니다.
+        </div>
+
+        <div class="tech-stack">
+          <strong>Stack:</strong> Node.js + Express · Local command execution + Ollama LLM
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- False Positive Report Modal -->
+  <div id="reportModal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <h3>거짓 양성 신고</h3>
+      <p>아래 내용을 복사하여 기관이나 개발자에게 전달하세요.</p>
+      <textarea id="reportText" readonly rows="10"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="copyReportBtn">📋 클립보드에 복사</button>
+        <button type="button" class="ghost" id="closeReportBtn">닫기</button>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <div class="footer-left">
+      <span>Phishing AI Analyzer</span>
+      <span style="color:var(--line)">•</span>
+      <span>v<span id="footerVersion">1.4.0</span></span>
+      <span style="color:var(--line)">•</span>
+      <span style="color:var(--primary)">100% Local Execution</span>
+    </div>
+    <div class="footer-right">Internal Security Tool · No data leaves this device</div>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

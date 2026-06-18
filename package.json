@@ -1,0 +1,23 @@
+{
+  "name": "phishing-sms-analyzer",
+  "version": "1.4.0",
+  "description": "로컬 규칙 + Ollama 기반 피싱 문자 AI 분석기 — 100% 프라이버시 보호, 실제 운영 가능한 수준의 보안 도구",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "NODE_ENV=development node server.mjs",
+    "start": "NODE_ENV=production node server.mjs",
+    "prod": "NODE_ENV=production node server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
+    "morgan": "^1.11.0",
+    "multer": "^1.4.5-lts.1"
+  }
+}

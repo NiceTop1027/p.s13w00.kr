@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  phishing-analyzer:
+    build: .
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=production
+      - PORT=5173
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=llama3.2:latest
+      - URLHAUS_LOOKUP=true
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
+    # If you run Ollama on the host, use host.docker.internal on Mac/Windows
+    # On Linux you may need to use your host IP instead.
+    # Production tip: use --env-file or secrets for sensitive values.
