@@ -28,9 +28,15 @@ https://www.nhis.or.kr`
 const HISTORY_KEY = "phishing-analyzer-history";
 const MAX_HISTORY = 6;
 const SETTINGS_KEY = "phishing-analyzer-settings";
+const DEFAULT_UPLOAD_LIMITS = Object.freeze({
+  maxFiles: 4,
+  maxFileSizeBytes: 5 * 1024 * 1024
+});
 
 let lastResultData = null;
 let selectedHistoryIds = new Set();
+let uploadLimits = { ...DEFAULT_UPLOAD_LIMITS };
+let fileListWarning = "";
 
 // DOM refs
 const messageInput = document.getElementById("message");
@@ -87,6 +93,55 @@ tabButtons.forEach(btn => {
 
 
 // =====================================================
+// API helpers
+// =====================================================
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get("content-type") || "";
+  const bodyText = await response.text();
+  const requestId = response.headers.get("x-request-id");
+
+  if (!contentType.includes("application/json")) {
+    const plainText = bodyText
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const suffix = requestId ? ` (요청 ID: ${requestId})` : "";
+    const htmlMessage = "API가 JSON 대신 HTML 페이지를 반환했습니다. 서버 라우팅 또는 업로드 제한을 확인하세요.";
+    const genericMessage = `API 응답 형식이 올바르지 않습니다. HTTP ${response.status}`;
+
+    throw new Error(`${bodyText.trim().startsWith("<") ? htmlMessage : genericMessage}${suffix}${plainText ? `: ${plainText.slice(0, 120)}` : ""}`);
+  }
+
+  let data;
+  try {
+    data = bodyText ? JSON.parse(bodyText) : {};
+  } catch {
+    throw new Error("서버 JSON 응답을 해석하지 못했습니다.");
+  }
+
+  if (!response.ok) {
+    const suffix = data.requestId ? ` (요청 ID: ${data.requestId})` : "";
+    throw new Error(`${data.error || `요청 실패 (HTTP ${response.status})`}${suffix}`);
+  }
+
+  return data;
+}
+
+function applyUploadLimits(limits) {
+  if (!limits || typeof limits !== "object") return;
+  const maxFiles = Number(limits.maxFiles);
+  const maxFileSizeBytes = Number(limits.maxFileSizeBytes);
+
+  uploadLimits = {
+    maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : DEFAULT_UPLOAD_LIMITS.maxFiles,
+    maxFileSizeBytes: Number.isFinite(maxFileSizeBytes) && maxFileSizeBytes > 0 ? maxFileSizeBytes : DEFAULT_UPLOAD_LIMITS.maxFileSizeBytes
+  };
+}
+
+// =====================================================
 // Settings
 // =====================================================
 function loadSettings() {
@@ -115,7 +170,8 @@ function initSettings() {
   }
 
   // Load model from /api/status later
-  fetch("/api/status").then(r => r.json()).then(s => {
+  fetchJson("/api/status").then(s => {
+    applyUploadLimits(s.uploadLimits);
     if (currentModelEl) currentModelEl.textContent = s.ollamaModel || "llama3.2:latest";
     // Also update mini header
     const mini = document.getElementById("engineMini");
@@ -141,8 +197,8 @@ function initSettings() {
 // =====================================================
 async function loadStatus() {
   try {
-    const res = await fetch("/api/status");
-    const status = await res.json();
+    const status = await fetchJson("/api/status");
+    applyUploadLimits(status.uploadLimits);
 
     statusDot.classList.add("on");
     engineStateShort.textContent = status.aiEngine || "로컬 준비됨";
@@ -170,25 +226,64 @@ function selectedFiles() {
   }));
 }
 
+function normalizeFileSelection(files) {
+  const warnings = [];
+  let accepted = Array.from(files || []);
+  const oversized = accepted.filter(file => file.size > uploadLimits.maxFileSizeBytes);
+
+  if (oversized.length > 0) {
+    accepted = accepted.filter(file => file.size <= uploadLimits.maxFileSizeBytes);
+    warnings.push(`${oversized.map(file => file.name).join(", ")}: 파일당 최대 ${formatBytes(uploadLimits.maxFileSizeBytes)}까지 가능합니다.`);
+  }
+
+  if (accepted.length > uploadLimits.maxFiles) {
+    const removed = accepted.slice(uploadLimits.maxFiles);
+    accepted = accepted.slice(0, uploadLimits.maxFiles);
+    warnings.push(`첨부파일은 최대 ${uploadLimits.maxFiles}개까지 가능합니다. 제외됨: ${removed.map(file => file.name).join(", ")}`);
+  }
+
+  return { files: accepted, warning: warnings.join(" ") };
+}
+
+function replaceFileInputFiles(files) {
+  if (typeof DataTransfer === "undefined") {
+    fileListWarning = "이 브라우저에서는 파일 목록 편집이 제한됩니다. 파일 선택 창에서 다시 선택하세요.";
+    return false;
+  }
+
+  const dt = new DataTransfer();
+  files.forEach(file => dt.items.add(file));
+  fileInput.files = dt.files;
+  return true;
+}
+
+function applyFileSelection(files) {
+  const normalized = normalizeFileSelection(files);
+  fileListWarning = normalized.warning;
+  replaceFileInputFiles(normalized.files);
+  updateFileList();
+}
+
 function updateFileList() {
   const files = selectedFiles();
+  const warningHtml = fileListWarning ? `<div class="file-warning">${escapeHtml(fileListWarning)}</div>` : "";
+
   if (files.length === 0) {
-    fileListEl.textContent = "선택된 파일 없음";
+    fileListEl.innerHTML = `선택된 파일 없음${warningHtml}`;
     return;
   }
   fileListEl.innerHTML = files.map((f, i) => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px;">
       <span>${escapeHtml(f.name)} · ${formatBytes(f.size)}</span>
       <button type="button" onclick="removeFileAt(${i})" style="background:none;border:0;color:#94a3b8;cursor:pointer;">✕</button>
-    </div>`).join("");
+    </div>`).join("") + warningHtml;
 }
 
 window.removeFileAt = function(index) {
-  const dt = new DataTransfer();
   const files = Array.from(fileInput.files);
   files.splice(index, 1);
-  files.forEach(f => dt.items.add(f));
-  fileInput.files = dt.files;
+  fileListWarning = "";
+  replaceFileInputFiles(files);
   updateFileList();
 };
 
@@ -200,11 +295,11 @@ function setupDragDrop() {
   zone.addEventListener("dragleave", () => { zone.style.borderColor = ""; });
   zone.addEventListener("drop", e => {
     e.preventDefault(); zone.style.borderColor = "";
-    const dt = new DataTransfer();
-    Array.from(fileInput.files).forEach(f => dt.items.add(f));
-    Array.from(e.dataTransfer.files).forEach(f => dt.items.add(f));
-    fileInput.files = dt.files;
-    updateFileList();
+    const nextFiles = [
+      ...Array.from(fileInput.files || []),
+      ...Array.from(e.dataTransfer.files || [])
+    ];
+    applyFileSelection(nextFiles);
   });
 }
 
@@ -217,6 +312,7 @@ function setupSamples() {
     if (!chip || !SAMPLE_PRESETS[chip.dataset.sample]) return;
     messageInput.value = SAMPLE_PRESETS[chip.dataset.sample];
     fileInput.value = "";
+    fileListWarning = "";
     updateFileList();
   });
 }
@@ -227,6 +323,13 @@ function setupSamples() {
 async function analyze() {
   const message = messageInput.value.trim();
   const fileList = fileInput.files || [];
+  const normalizedFiles = normalizeFileSelection(fileList);
+
+  if (normalizedFiles.warning && normalizedFiles.files.length !== fileList.length) {
+    applyFileSelection(fileList);
+    renderError(normalizedFiles.warning);
+    return;
+  }
 
   if (!message && fileList.length === 0) {
     renderError("분석할 문자 또는 파일을 입력하세요.");
@@ -237,7 +340,7 @@ async function analyze() {
   analyzeText.innerHTML = `<span class="spinner"></span> 분석 중...`;
 
   try {
-    let res, data;
+    let data;
 
     if (fileList.length > 0) {
       // Real file upload (new powerful system feature)
@@ -246,18 +349,15 @@ async function analyze() {
       for (let i = 0; i < fileList.length; i++) {
         form.append('files', fileList[i]);
       }
-      res = await fetch("/api/analyze", { method: "POST", body: form });
+      data = await fetchJson("/api/analyze", { method: "POST", body: form });
     } else {
       // Fast path: metadata only
-      res = await fetch("/api/analyze", {
+      data = await fetchJson("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, files: selectedFiles() })
       });
     }
-
-    data = await res.json();
-    if (!res.ok) throw new Error(data.error || "분석 실패");
 
     lastResultData = data;
     renderResult(data);
@@ -611,6 +711,7 @@ function setupHistory() {
 function reset() {
   messageInput.value = "";
   fileInput.value = "";
+  fileListWarning = "";
   updateFileList();
   riskVisual.className = "risk-visual";
   riskLabel.textContent = "분석 전";
@@ -640,7 +741,7 @@ function escapeHtml(s) {
 // Keyboard + Events
 // =====================================================
 function bindEvents() {
-  fileInput?.addEventListener("change", updateFileList);
+  fileInput?.addEventListener("change", () => applyFileSelection(fileInput.files));
   analyzeButton?.addEventListener("click", analyze);
   resetButton?.addEventListener("click", reset);
 

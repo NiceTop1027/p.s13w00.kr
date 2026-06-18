@@ -254,6 +254,12 @@ input[type="file"]:hover {
   border: 1px solid var(--line);
 }
 
+.file-warning {
+  margin-top: 6px;
+  color: var(--medium);
+  font-size: 12px;
+}
+
 .samples {
   display: flex;
   flex-wrap: wrap;

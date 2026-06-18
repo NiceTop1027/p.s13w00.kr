@@ -80,9 +80,12 @@ async function checkResolvedSafety(hostname) {
 // Supports actual file uploads → hash, magic, string extraction, risk intel
 // All processing is local. Files are never stored permanently.
 // =====================================================
+const MAX_UPLOAD_FILE_SIZE = Number(process.env.MAX_UPLOAD_FILE_BYTES || 5 * 1024 * 1024);
+const MAX_UPLOAD_FILES = Number(process.env.MAX_UPLOAD_FILES || 4);
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 4 }
+  limits: { fileSize: MAX_UPLOAD_FILE_SIZE, files: MAX_UPLOAD_FILES }
 });
 
 function computeSha256(buffer) {
@@ -189,6 +192,14 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
 }));
 
+// Request ID for tracing
+app.use((req, res, next) => {
+  req.id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  res.setHeader("X-Request-ID", req.id);
+  res.setHeader("X-Service-Version", VERSION);
+  next();
+});
+
 // Request size limit
 app.use(express.json({ limit: "1mb" }));
 
@@ -197,15 +208,16 @@ const logFormat = process.env.NODE_ENV === "production" ? "combined" : "dev";
 app.use(morgan(logFormat));
 
 // Static files
-app.use(express.static(path.join(__dirname, "public")));
-
-// Request ID for tracing
-app.use((req, res, next) => {
-  req.id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  res.setHeader("X-Request-ID", req.id);
-  res.setHeader("X-Service-Version", VERSION);
-  next();
-});
+app.use(express.static(path.join(__dirname, "public"), {
+  setHeaders(res, filePath) {
+    const assetName = path.basename(filePath);
+    if (["index.html", "app.js", "styles.css"].includes(assetName)) {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
+    }
+  }
+}));
 
 // Rate limiting for analysis endpoint (protect local service from abuse / loops)
 const analyzeLimiter = rateLimit({
@@ -1259,11 +1271,15 @@ app.get("/api/status", (req, res) => {
     model: process.env.OLLAMA_MODEL || "llama3.2:latest",
     urlhausEnabled: process.env.URLHAUS_LOOKUP !== "false",
     liveProbesEnabled: ENABLE_LIVE_PROBES,
+    uploadLimits: {
+      maxFiles: MAX_UPLOAD_FILES,
+      maxFileSizeBytes: MAX_UPLOAD_FILE_SIZE
+    },
     environment: IS_VERCEL ? "vercel-serverless" : (process.env.NODE_ENV || "development")
   });
 });
 
-app.post("/api/analyze", analyzeLimiter, upload.array('files', 4), async (req, res) => {
+app.post("/api/analyze", analyzeLimiter, upload.array('files', MAX_UPLOAD_FILES), async (req, res) => {
   const start = Date.now();
   const trace = []; // Collect "commands" the system actually ran (for agentic feel)
 
@@ -1353,6 +1369,61 @@ app.post("/api/analyze", analyzeLimiter, upload.array('files', 4), async (req, r
 app.use("/api", (req, res) => {
   res.status(404).json({ error: "알 수 없는 API 경로입니다.", code: "NOT_FOUND" });
 });
+
+app.use("/api", (error, req, res, next) => {
+  if (res.headersSent) return next(error);
+
+  const requestId = req.id || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+
+  if (error instanceof multer.MulterError) {
+    const messages = {
+      LIMIT_FILE_SIZE: `첨부파일은 파일당 최대 ${formatBytesForMessage(MAX_UPLOAD_FILE_SIZE)}까지 업로드할 수 있습니다.`,
+      LIMIT_FILE_COUNT: `첨부파일은 최대 ${MAX_UPLOAD_FILES}개까지 업로드할 수 있습니다.`,
+      LIMIT_UNEXPECTED_FILE: `첨부파일은 최대 ${MAX_UPLOAD_FILES}개까지 업로드할 수 있습니다.`
+    };
+
+    return res.status(error.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+      error: messages[error.code] || "첨부파일 업로드 요청을 처리할 수 없습니다.",
+      code: error.code || "UPLOAD_ERROR",
+      requestId
+    });
+  }
+
+  if (error?.type === "entity.too.large") {
+    return res.status(413).json({
+      error: "요청 본문이 너무 큽니다.",
+      code: "BODY_TOO_LARGE",
+      requestId
+    });
+  }
+
+  if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
+    return res.status(400).json({
+      error: "JSON 요청 형식이 올바르지 않습니다.",
+      code: "INVALID_JSON",
+      requestId
+    });
+  }
+
+  console.error(`[${requestId}] API middleware error:`, error);
+  return res.status(500).json({
+    error: "요청 처리 중 오류가 발생했습니다.",
+    code: "INTERNAL_ERROR",
+    requestId
+  });
+});
+
+function formatBytesForMessage(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(unitIndex ? 1 : 0)} ${units[unitIndex]}`;
+}
 
 function mergeResults(localResult, aiResult) {
   if (!aiResult) return localResult;
